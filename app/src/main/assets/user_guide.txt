@@ -1,0 +1,26 @@
+🎙️ TTS Pro User Guide
+
+Welcome to TTS Pro, your Material You Text-to-Speech companion.
+
+🚀 Quick Start
+1. Enter your text in the "Message" box.
+2. Select your target language from the top bar.
+3. Tap "Speak" to hear it immediately.
+4. Tap "Translate & Speak" to convert English text to your selected language before playing.
+
+💾 Saving Audio
+- Tap the Save icon (diskette) to export your speech as a .wav file.
+- Files are saved to your "Music/TTSPro" folder.
+
+⚙️ Settings (Left Drawer)
+- Open the menu (☰) to adjust:
+  * Voice Pitch: Higher for squeaky, lower for deep voices.
+  * Reading Speed: Adjust how fast the voice speaks.
+  * Permissions: Grant Microphone access for upcoming features.
+
+🌗 Themes
+- Tap the Sun/Moon icon in the top right to toggle Dark Mode.
+- On Android 12+, the app automatically matches your wallpaper colors!
+
+🌐 Supported Languages
+English, Arabic, Bengali, Hindi, Urdu, Spanish, French, German, Italian, Chinese, Japanese, Portuguese, and Russian.
