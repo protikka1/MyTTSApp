@@ -2,11 +2,15 @@ package com.example.myttsapp
 
 import android.Manifest
 import android.content.ContentValues
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
 import android.os.Environment
 import android.provider.MediaStore
+import android.speech.RecognitionListener
+import android.speech.RecognizerIntent
+import android.speech.SpeechRecognizer
 import android.speech.tts.TextToSpeech
 import android.util.Log
 import android.widget.Toast
@@ -32,6 +36,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -39,9 +44,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.core.content.ContextCompat
 import com.google.mlkit.common.model.DownloadConditions
-import com.google.mlkit.common.model.RemoteModelManager
 import com.google.mlkit.nl.translate.TranslateLanguage
-import com.google.mlkit.nl.translate.TranslateRemoteModel
 import com.google.mlkit.nl.translate.Translation
 import com.google.mlkit.nl.translate.Translator
 import com.google.mlkit.nl.translate.TranslatorOptions
@@ -59,7 +62,11 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
     private var isModelReady by mutableStateOf(false)
     private var downloadProgress by mutableStateOf<String?>(null)
 
-    // All supported languages from ML Kit
+    // Speech-to-Text (Voice Command)
+    private var speechRecognizer: SpeechRecognizer? = null
+    private var isListening by mutableStateOf(false)
+    private var recognizedText = mutableStateOf("")
+
     private val allSupportedLocales by lazy {
         TranslateLanguage.getAllLanguages()
             .map { Locale.forLanguageTag(it) }
@@ -70,13 +77,13 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
     private val requestPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { isGranted: Boolean ->
-        val msg = if (isGranted) "Permission Granted" else "Permission Denied"
-        Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
+        if (!isGranted) Toast.makeText(this, "Permission Denied", Toast.LENGTH_SHORT).show()
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         tts = TextToSpeech(this, this)
+        initSpeechRecognizer()
         
         setContent {
             val context = LocalContext.current
@@ -97,6 +104,8 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
                     isModelReady = isModelReady,
                     isDarkMode = isDarkMode,
                     isTranslating = isTranslating,
+                    isListening = isListening,
+                    recognizedText = recognizedText.value,
                     currentLocale = currentLocale,
                     supportedLocales = allSupportedLocales,
                     downloadProgress = downloadProgress,
@@ -118,6 +127,8 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
                             translateAndAction(text, pitch, speed, isSave = true)
                         }
                     },
+                    onStartListening = { startListening() },
+                    onStopListening = { stopListening() },
                     onRequestPermission = { permission ->
                         requestPermissionLauncher.launch(permission)
                     },
@@ -126,6 +137,43 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
             }
         }
         setupTranslator(currentLocale)
+    }
+
+    private fun initSpeechRecognizer() {
+        speechRecognizer = SpeechRecognizer.createSpeechRecognizer(this)
+        speechRecognizer?.setRecognitionListener(object : RecognitionListener {
+            override fun onReadyForSpeech(params: Bundle?) { isListening = true }
+            override fun onBeginningOfSpeech() {}
+            override fun onRmsChanged(rmsdB: Float) {}
+            override fun onBufferReceived(buffer: ByteArray?) {}
+            override fun onEndOfSpeech() { isListening = false }
+            override fun onError(error: Int) { isListening = false }
+            override fun onResults(results: Bundle?) {
+                val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                if (!matches.isNullOrEmpty()) {
+                    recognizedText.value = matches[0]
+                }
+            }
+            override fun onPartialResults(partialResults: Bundle?) {}
+            override fun onEvent(eventType: Int, params: Bundle?) {}
+        })
+    }
+
+    private fun startListening() {
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+            return
+        }
+        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault())
+        }
+        speechRecognizer?.startListening(intent)
+    }
+
+    private fun stopListening() {
+        speechRecognizer?.stopListening()
+        isListening = false
     }
 
     private fun setupTranslator(targetLocale: Locale) {
@@ -142,10 +190,7 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
         initializeTranslator(targetLang)
         downloadProgress = "Starting download for ${targetLocale.displayLanguage}..."
         
-        // Use conditions that explicitly allow cellular data
-        val conditions = DownloadConditions.Builder()
-            .build() // Default allows both Wifi and Cellular
-
+        val conditions = DownloadConditions.Builder().build()
         translator?.downloadModelIfNeeded(conditions)
             ?.addOnSuccessListener {
                 isModelReady = true
@@ -156,7 +201,6 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
                 isModelReady = false
                 downloadProgress = "Download failed. Check internet."
                 Log.e("TTSPro", "Download failed", e)
-                Toast.makeText(this, "Failed to download ${targetLocale.displayLanguage}", Toast.LENGTH_SHORT).show()
             }
     }
 
@@ -169,10 +213,7 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
     }
 
     private fun translateAndAction(text: String, pitch: Float, speed: Float, isSave: Boolean) {
-        if (text.isBlank() || !isModelReady) {
-            if (!isModelReady) Toast.makeText(this, "Language model is not ready yet.", Toast.LENGTH_SHORT).show()
-            return
-        }
+        if (text.isBlank() || !isModelReady) return
         isTranslating = true
         translator?.translate(text)
             ?.addOnSuccessListener { translatedText ->
@@ -192,7 +233,7 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
             setSpeechRate(speed)
             val result = setLanguage(locale)
             if (result == TextToSpeech.LANG_MISSING_DATA || result == TextToSpeech.LANG_NOT_SUPPORTED) {
-                Toast.makeText(this@MainActivity, "Voice data missing for this language.", Toast.LENGTH_LONG).show()
+                Toast.makeText(this@MainActivity, "Voice data missing.", Toast.LENGTH_LONG).show()
             }
             speak(text, TextToSpeech.QUEUE_FLUSH, null, "tts_id")
         }
@@ -231,6 +272,7 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
     override fun onDestroy() {
         tts?.shutdown()
         translator?.close()
+        speechRecognizer?.destroy()
         super.onDestroy()
     }
 }
@@ -242,6 +284,8 @@ fun TTSAppContainer(
     isModelReady: Boolean,
     isDarkMode: Boolean,
     isTranslating: Boolean,
+    isListening: Boolean,
+    recognizedText: String,
     currentLocale: Locale,
     supportedLocales: List<Locale>,
     downloadProgress: String?,
@@ -250,6 +294,8 @@ fun TTSAppContainer(
     onSpeak: (String, Float, Float) -> Unit,
     onTranslateAndSpeak: (String, Float, Float) -> Unit,
     onSaveAudio: (String, Float, Float) -> Unit,
+    onStartListening: () -> Unit,
+    onStopListening: () -> Unit,
     onRequestPermission: (String) -> Unit,
     onRetryDownload: () -> Unit
 ) {
@@ -290,7 +336,7 @@ fun TTSAppContainer(
                 )
             }
         ) { padding ->
-            MainScreenContent(padding, isReady, isModelReady, isTranslating, currentLocale, supportedLocales, downloadProgress, onLanguageChange, { onSpeak(it, pitch, speed) }, { onTranslateAndSpeak(it, pitch, speed) }, { onSaveAudio(it, pitch, speed) }, onRetryDownload)
+            MainScreenContent(padding, isReady, isModelReady, isTranslating, isListening, recognizedText, currentLocale, supportedLocales, downloadProgress, onLanguageChange, { onSpeak(it, pitch, speed) }, { onTranslateAndSpeak(it, pitch, speed) }, { onSaveAudio(it, pitch, speed) }, onStartListening, onStopListening, onRetryDownload)
         }
     }
 }
@@ -337,9 +383,13 @@ fun DrawerContent(pitch: Float, onPitchChange: (Float) -> Unit, speed: Float, on
 }
 
 @Composable
-fun MainScreenContent(padding: PaddingValues, isReady: Boolean, isModelReady: Boolean, isTranslating: Boolean, currentLocale: Locale, supportedLocales: List<Locale>, downloadProgress: String?, onLanguageChange: (Locale) -> Unit, onSpeak: (String) -> Unit, onTranslateAndSpeak: (String) -> Unit, onSaveAudio: (String) -> Unit, onRetryDownload: () -> Unit) {
+fun MainScreenContent(padding: PaddingValues, isReady: Boolean, isModelReady: Boolean, isTranslating: Boolean, isListening: Boolean, recognizedText: String, currentLocale: Locale, supportedLocales: List<Locale>, downloadProgress: String?, onLanguageChange: (Locale) -> Unit, onSpeak: (String) -> Unit, onTranslateAndSpeak: (String) -> Unit, onSaveAudio: (String) -> Unit, onStartListening: () -> Unit, onStopListening: () -> Unit, onRetryDownload: () -> Unit) {
     var text by remember { mutableStateOf("") }
     var showLanguagePicker by remember { mutableStateOf(false) }
+
+    LaunchedEffect(recognizedText) {
+        if (recognizedText.isNotBlank()) text = recognizedText
+    }
 
     if (showLanguagePicker) {
         LanguageSearchDialog(
@@ -365,7 +415,23 @@ fun MainScreenContent(padding: PaddingValues, isReady: Boolean, isModelReady: Bo
         Spacer(modifier = Modifier.height(24.dp))
         ElevatedCard(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(24.dp)) {
             Column(modifier = Modifier.padding(20.dp)) {
-                OutlinedTextField(value = text, onValueChange = { text = it }, placeholder = { Text("Enter text in English...") }, modifier = Modifier.fillMaxWidth(), minLines = 4, shape = RoundedCornerShape(16.dp))
+                OutlinedTextField(
+                    value = text, 
+                    onValueChange = { text = it }, 
+                    placeholder = { Text("Enter text in English...") }, 
+                    modifier = Modifier.fillMaxWidth(), 
+                    minLines = 4, 
+                    shape = RoundedCornerShape(16.dp),
+                    trailingIcon = {
+                        IconButton(onClick = { if (isListening) onStopListening() else onStartListening() }) {
+                            Icon(
+                                if (isListening) Icons.Default.StopCircle else Icons.Default.Mic,
+                                contentDescription = null,
+                                tint = if (isListening) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
+                            )
+                        }
+                    }
+                )
                 Spacer(modifier = Modifier.height(16.dp))
                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Button(onClick = { onSpeak(text) }, enabled = isReady && text.isNotBlank(), modifier = Modifier.weight(1f).height(56.dp), shape = RoundedCornerShape(16.dp)) { Text("Speak") }
@@ -375,6 +441,12 @@ fun MainScreenContent(padding: PaddingValues, isReady: Boolean, isModelReady: Bo
                     }
                     OutlinedButton(onClick = { onSaveAudio(text) }, enabled = isReady && (currentLocale == Locale.US || isModelReady) && text.isNotBlank(), modifier = Modifier.weight(0.8f).height(56.dp), shape = RoundedCornerShape(16.dp), contentPadding = PaddingValues(0.dp)) { Icon(Icons.Default.Save, null) }
                 }
+            }
+        }
+        AnimatedVisibility(visible = isListening) {
+            Column(modifier = Modifier.padding(top = 16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                Text("Listening...", modifier = Modifier.padding(top = 8.dp), color = MaterialTheme.colorScheme.primary)
             }
         }
         AnimatedVisibility(visible = !isReady || (!isModelReady && currentLocale != Locale.US)) {
