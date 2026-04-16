@@ -4,9 +4,11 @@ import android.Manifest
 import android.content.ContentValues
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Environment
+import android.provider.ContactsContract
 import android.provider.MediaStore
 import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
@@ -62,10 +64,13 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
     private var isModelReady by mutableStateOf(false)
     private var downloadProgress by mutableStateOf<String?>(null)
 
-    // Speech-to-Text (Voice Command)
+    // Speech-to-Text
     private var speechRecognizer: SpeechRecognizer? = null
     private var isListening by mutableStateOf(false)
     private var recognizedText = mutableStateOf("")
+    
+    // Contact Picker
+    private var pickedContactName = mutableStateOf("")
 
     private val allSupportedLocales by lazy {
         TranslateLanguage.getAllLanguages()
@@ -77,7 +82,14 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
     private val requestPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { isGranted: Boolean ->
-        if (!isGranted) Toast.makeText(this, "Permission Denied", Toast.LENGTH_SHORT).show()
+        val msg = if (isGranted) "Permission Granted" else "Permission Denied"
+        Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
+    }
+
+    private val pickContactLauncher = registerForActivityResult(
+        ActivityResultContracts.PickContact()
+    ) { uri: Uri? ->
+        uri?.let { getContactName(it) }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -106,6 +118,7 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
                     isTranslating = isTranslating,
                     isListening = isListening,
                     recognizedText = recognizedText.value,
+                    pickedContactName = pickedContactName.value,
                     currentLocale = currentLocale,
                     supportedLocales = allSupportedLocales,
                     downloadProgress = downloadProgress,
@@ -129,6 +142,13 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
                     },
                     onStartListening = { startListening() },
                     onStopListening = { stopListening() },
+                    onPickContact = { 
+                        if (ContextCompat.checkSelfPermission(this, Manifest.permission.READ_CONTACTS) == PackageManager.PERMISSION_GRANTED) {
+                            pickContactLauncher.launch(null)
+                        } else {
+                            requestPermissionLauncher.launch(Manifest.permission.READ_CONTACTS)
+                        }
+                    },
                     onRequestPermission = { permission ->
                         requestPermissionLauncher.launch(permission)
                     },
@@ -137,6 +157,19 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
             }
         }
         setupTranslator(currentLocale)
+    }
+
+    private fun getContactName(uri: Uri) {
+        val cursor = contentResolver.query(uri, null, null, null, null)
+        cursor?.use {
+            if (it.moveToFirst()) {
+                val nameIndex = it.getColumnIndex(ContactsContract.Contacts.DISPLAY_NAME)
+                if (nameIndex != -1) {
+                    pickedContactName.value = it.getString(nameIndex)
+                    recognizedText.value = "" 
+                }
+            }
+        }
     }
 
     private fun initSpeechRecognizer() {
@@ -152,6 +185,7 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
                 val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
                 if (!matches.isNullOrEmpty()) {
                     recognizedText.value = matches[0]
+                    pickedContactName.value = ""
                 }
             }
             override fun onPartialResults(partialResults: Bundle?) {}
@@ -195,12 +229,10 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
             ?.addOnSuccessListener {
                 isModelReady = true
                 downloadProgress = null
-                Log.d("TTSPro", "Model ready: ${targetLocale.displayLanguage}")
             }
             ?.addOnFailureListener { e ->
                 isModelReady = false
-                downloadProgress = "Download failed. Check internet."
-                Log.e("TTSPro", "Download failed", e)
+                downloadProgress = "Download failed."
             }
     }
 
@@ -223,7 +255,6 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
             }
             ?.addOnFailureListener { e ->
                 isTranslating = false
-                Toast.makeText(this, "Translation error: ${e.message}", Toast.LENGTH_SHORT).show()
             }
     }
 
@@ -231,10 +262,7 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
         tts?.apply {
             setPitch(pitch)
             setSpeechRate(speed)
-            val result = setLanguage(locale)
-            if (result == TextToSpeech.LANG_MISSING_DATA || result == TextToSpeech.LANG_NOT_SUPPORTED) {
-                Toast.makeText(this@MainActivity, "Voice data missing.", Toast.LENGTH_LONG).show()
-            }
+            setLanguage(locale)
             speak(text, TextToSpeech.QUEUE_FLUSH, null, "tts_id")
         }
     }
@@ -286,6 +314,7 @@ fun TTSAppContainer(
     isTranslating: Boolean,
     isListening: Boolean,
     recognizedText: String,
+    pickedContactName: String,
     currentLocale: Locale,
     supportedLocales: List<Locale>,
     downloadProgress: String?,
@@ -296,6 +325,7 @@ fun TTSAppContainer(
     onSaveAudio: (String, Float, Float) -> Unit,
     onStartListening: () -> Unit,
     onStopListening: () -> Unit,
+    onPickContact: () -> Unit,
     onRequestPermission: (String) -> Unit,
     onRetryDownload: () -> Unit
 ) {
@@ -336,7 +366,7 @@ fun TTSAppContainer(
                 )
             }
         ) { padding ->
-            MainScreenContent(padding, isReady, isModelReady, isTranslating, isListening, recognizedText, currentLocale, supportedLocales, downloadProgress, onLanguageChange, { onSpeak(it, pitch, speed) }, { onTranslateAndSpeak(it, pitch, speed) }, { onSaveAudio(it, pitch, speed) }, onStartListening, onStopListening, onRetryDownload)
+            MainScreenContent(padding, isReady, isModelReady, isTranslating, isListening, recognizedText, pickedContactName, currentLocale, supportedLocales, downloadProgress, onLanguageChange, { onSpeak(it, pitch, speed) }, { onTranslateAndSpeak(it, pitch, speed) }, { onSaveAudio(it, pitch, speed) }, onStartListening, onStopListening, onPickContact, onRetryDownload)
         }
     }
 }
@@ -367,15 +397,8 @@ fun DrawerContent(pitch: Float, onPitchChange: (Float) -> Unit, speed: Float, on
         Text("Permissions", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
         Spacer(modifier = Modifier.height(8.dp))
         
-        val micGranted = ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
-        NavigationDrawerItem(
-            label = { Text("Mic Access") }, 
-            selected = false, 
-            onClick = { onRequestPermission(Manifest.permission.RECORD_AUDIO) }, 
-            icon = { Icon(Icons.Default.Mic, null) }, 
-            badge = { Text(if (micGranted) "OK" else "Fix") }, 
-            shape = RoundedCornerShape(12.dp)
-        )
+        PermissionItem("Mic Access", Manifest.permission.RECORD_AUDIO, Icons.Default.Mic, onRequestPermission)
+        PermissionItem("Contacts Access", Manifest.permission.READ_CONTACTS, Icons.Default.Person, onRequestPermission)
 
         Spacer(modifier = Modifier.height(16.dp))
         NavigationDrawerItem(label = { Text("User Guide") }, selected = false, onClick = onShowGuide, icon = { Icon(Icons.AutoMirrored.Filled.HelpOutline, null) }, shape = RoundedCornerShape(12.dp))
@@ -383,13 +406,26 @@ fun DrawerContent(pitch: Float, onPitchChange: (Float) -> Unit, speed: Float, on
 }
 
 @Composable
-fun MainScreenContent(padding: PaddingValues, isReady: Boolean, isModelReady: Boolean, isTranslating: Boolean, isListening: Boolean, recognizedText: String, currentLocale: Locale, supportedLocales: List<Locale>, downloadProgress: String?, onLanguageChange: (Locale) -> Unit, onSpeak: (String) -> Unit, onTranslateAndSpeak: (String) -> Unit, onSaveAudio: (String) -> Unit, onStartListening: () -> Unit, onStopListening: () -> Unit, onRetryDownload: () -> Unit) {
+fun PermissionItem(label: String, permission: String, icon: androidx.compose.ui.graphics.vector.ImageVector, onRequest: (String) -> Unit) {
+    val context = LocalContext.current
+    val isGranted = ContextCompat.checkSelfPermission(context, permission) == PackageManager.PERMISSION_GRANTED
+    NavigationDrawerItem(
+        label = { Text(label) }, 
+        selected = false, 
+        onClick = { onRequest(permission) }, 
+        icon = { Icon(icon, null) }, 
+        badge = { Text(if (isGranted) "OK" else "Fix") }, 
+        shape = RoundedCornerShape(12.dp)
+    )
+}
+
+@Composable
+fun MainScreenContent(padding: PaddingValues, isReady: Boolean, isModelReady: Boolean, isTranslating: Boolean, isListening: Boolean, recognizedText: String, pickedContactName: String, currentLocale: Locale, supportedLocales: List<Locale>, downloadProgress: String?, onLanguageChange: (Locale) -> Unit, onSpeak: (String) -> Unit, onTranslateAndSpeak: (String) -> Unit, onSaveAudio: (String) -> Unit, onStartListening: () -> Unit, onStopListening: () -> Unit, onPickContact: () -> Unit, onRetryDownload: () -> Unit) {
     var text by remember { mutableStateOf("") }
     var showLanguagePicker by remember { mutableStateOf(false) }
 
-    LaunchedEffect(recognizedText) {
-        if (recognizedText.isNotBlank()) text = recognizedText
-    }
+    LaunchedEffect(recognizedText) { if (recognizedText.isNotBlank()) text = recognizedText }
+    LaunchedEffect(pickedContactName) { if (pickedContactName.isNotBlank()) text = pickedContactName }
 
     if (showLanguagePicker) {
         LanguageSearchDialog(
@@ -418,17 +454,16 @@ fun MainScreenContent(padding: PaddingValues, isReady: Boolean, isModelReady: Bo
                 OutlinedTextField(
                     value = text, 
                     onValueChange = { text = it }, 
-                    placeholder = { Text("Enter text in English...") }, 
+                    placeholder = { Text("Enter text or pick a contact...") }, 
                     modifier = Modifier.fillMaxWidth(), 
                     minLines = 4, 
                     shape = RoundedCornerShape(16.dp),
                     trailingIcon = {
-                        IconButton(onClick = { if (isListening) onStopListening() else onStartListening() }) {
-                            Icon(
-                                if (isListening) Icons.Default.StopCircle else Icons.Default.Mic,
-                                contentDescription = null,
-                                tint = if (isListening) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
-                            )
+                        Row {
+                            IconButton(onClick = onPickContact) { Icon(Icons.Default.Person, null) }
+                            IconButton(onClick = { if (isListening) onStopListening() else onStartListening() }) {
+                                Icon(if (isListening) Icons.Default.StopCircle else Icons.Default.Mic, null, tint = if (isListening) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary)
+                            }
                         }
                     }
                 )
@@ -436,8 +471,7 @@ fun MainScreenContent(padding: PaddingValues, isReady: Boolean, isModelReady: Bo
                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Button(onClick = { onSpeak(text) }, enabled = isReady && text.isNotBlank(), modifier = Modifier.weight(1f).height(56.dp), shape = RoundedCornerShape(16.dp)) { Text("Speak") }
                     FilledTonalButton(onClick = { onTranslateAndSpeak(text) }, enabled = isReady && isModelReady && text.isNotBlank() && !isTranslating, modifier = Modifier.weight(1.2f).height(56.dp), shape = RoundedCornerShape(16.dp)) {
-                        if (isTranslating) CircularProgressIndicator(modifier = Modifier.size(24.dp), strokeWidth = 2.dp)
-                        else Text("Translate")
+                        if (isTranslating) CircularProgressIndicator(modifier = Modifier.size(24.dp), strokeWidth = 2.dp) else Text("Translate")
                     }
                     OutlinedButton(onClick = { onSaveAudio(text) }, enabled = isReady && (currentLocale == Locale.US || isModelReady) && text.isNotBlank(), modifier = Modifier.weight(0.8f).height(56.dp), shape = RoundedCornerShape(16.dp), contentPadding = PaddingValues(0.dp)) { Icon(Icons.Default.Save, null) }
                 }
@@ -465,32 +499,13 @@ fun MainScreenContent(padding: PaddingValues, isReady: Boolean, isModelReady: Bo
 @Composable
 fun LanguageSearchDialog(locales: List<Locale>, onDismiss: () -> Unit, onSelect: (Locale) -> Unit) {
     var searchQuery by remember { mutableStateOf("") }
-    val filteredLocales = remember(searchQuery) {
-        if (searchQuery.isEmpty()) locales
-        else locales.filter { it.getDisplayName(Locale.ENGLISH).contains(searchQuery, ignoreCase = true) }
-    }
-
+    val filteredLocales = remember(searchQuery) { if (searchQuery.isEmpty()) locales else locales.filter { it.getDisplayName(Locale.ENGLISH).contains(searchQuery, ignoreCase = true) } }
     Dialog(onDismissRequest = onDismiss) {
         Surface(shape = RoundedCornerShape(28.dp), color = MaterialTheme.colorScheme.surface, tonalElevation = 6.dp, modifier = Modifier.fillMaxHeight(0.8f).fillMaxWidth()) {
             Column(modifier = Modifier.padding(16.dp)) {
                 Text("Select Language", style = MaterialTheme.typography.headlineSmall, modifier = Modifier.padding(8.dp))
-                OutlinedTextField(
-                    value = searchQuery,
-                    onValueChange = { searchQuery = it },
-                    placeholder = { Text("Search 50+ languages...") },
-                    modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp),
-                    leadingIcon = { Icon(Icons.Default.Search, null) },
-                    shape = RoundedCornerShape(16.dp)
-                )
-                LazyColumn(modifier = Modifier.weight(1f)) {
-                    items(filteredLocales) { locale ->
-                        ListItem(
-                            headlineContent = { Text(locale.getDisplayName(Locale.ENGLISH), fontWeight = FontWeight.Medium) },
-                            supportingContent = { Text(locale.displayLanguage) },
-                            modifier = Modifier.clickable { onSelect(locale) }
-                        )
-                    }
-                }
+                OutlinedTextField(value = searchQuery, onValueChange = { searchQuery = it }, placeholder = { Text("Search 50+ languages...") }, modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp), leadingIcon = { Icon(Icons.Default.Search, null) }, shape = RoundedCornerShape(16.dp))
+                LazyColumn(modifier = Modifier.weight(1f)) { items(filteredLocales) { locale -> ListItem(headlineContent = { Text(locale.getDisplayName(Locale.ENGLISH), fontWeight = FontWeight.Medium) }, supportingContent = { Text(locale.displayLanguage) }, modifier = Modifier.clickable { onSelect(locale) }) } }
                 TextButton(onClick = onDismiss, modifier = Modifier.align(Alignment.End)) { Text("Cancel") }
             }
         }
@@ -501,9 +516,7 @@ fun LanguageSearchDialog(locales: List<Locale>, onDismiss: () -> Unit, onSelect:
 fun SettingSlider(label: String, value: Float, onValueChange: (Float) -> Unit) {
     Column {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(label, style = MaterialTheme.typography.titleSmall)
-            Spacer(modifier = Modifier.weight(1f))
-            Text("%.1f".format(value))
+            Text(label, style = MaterialTheme.typography.titleSmall); Spacer(modifier = Modifier.weight(1f)); Text("%.1f".format(value))
         }
         Slider(value = value, onValueChange = onValueChange, valueRange = 0.5f..2.0f)
     }
